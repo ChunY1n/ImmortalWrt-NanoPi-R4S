@@ -1,0 +1,192 @@
+#
+# Copyright (c) 2019-2020 P3TERX <https://p3terx.com>
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+# https://github.com/P3TERX/Actions-OpenWrt
+# Description: Build OpenWrt using GitHub Actions
+#
+
+name: Build R4S ImmortalWrt
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 18 * * 4 # 北京时间每周五凌晨 2:00 自动触发编译更新
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: master
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: .config
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift / those /var/lib/apt/lists/*
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo u-boot-tools upx-ucl unzip vim wget xmlto xz-utils zlib1g-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$USER /workdir
+
+    - name: Clone source code
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Load custom feeds & DIY 1
+      run: |
+        [ -e $FEEDS_CONF ] && cp $FEEDS_CONF openwrt/feeds.conf.default
+        cd openwrt
+        # 自动注入 Kiddin9 和 Passwall 软件源
+        echo 'src-git kiddin9 https://github.com/kiddin9/openwrt-packages' >> feeds.conf.default
+        echo 'src-git passwall https://github.com/xiaorouji/openwrt-passwall' >> feeds.conf.default
+        
+    - name: Update & Install feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Load custom configuration & DIY 2
+      run: |
+        cd openwrt
+        # 1. 自动写入你要求的全部硬件平台配置、1G存储空间、基础包和插件
+        cat <<EOF > .config
+        CONFIG_TARGET_rockchip=y
+        CONFIG_TARGET_rockchip_armv8=y
+        CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r4s=y
+        CONFIG_TARGET_ROOTFS_PARTSIZE=1024
+        CONFIG_TARGET_ROOTFS_SQUASHFS=y
+        CONFIG_TARGET_ROOTFS_EXT4FS=y
+        CONFIG_PACKAGE_ipv6helper=y
+        CONFIG_PACKAGE_odhcp6c=y
+        CONFIG_PACKAGE_odhcpd-ipv6only=y
+        CONFIG_PACKAGE_uhttpd=y
+        CONFIG_PACKAGE_apk-openssl=y
+        CONFIG_PACKAGE_autocore=y
+        CONFIG_PACKAGE_automount=y
+        CONFIG_PACKAGE_base-files=y
+        CONFIG_PACKAGE_block-mount=y
+        CONFIG_PACKAGE_ca-bundle=y
+        CONFIG_PACKAGE_default-settings-chn=y
+        CONFIG_PACKAGE_dnsmasq-full=y
+        CONFIG_PACKAGE_dropbear=y
+        CONFIG_PACKAGE_fdisk=y
+        CONFIG_PACKAGE_firewall4=y
+        CONFIG_PACKAGE_fstools=y
+        CONFIG_PACKAGE_kmod-gpio-button-hotplug=y
+        CONFIG_PACKAGE_kmod-nf-nathelper=y
+        CONFIG_PACKAGE_kmod-nft-offload=y
+        CONFIG_PACKAGE_kmod-r8169=y
+        CONFIG_PACKAGE_libc=y
+        CONFIG_PACKAGE_libgcc=y
+        CONFIG_PACKAGE_libustream-openssl=y
+        CONFIG_PACKAGE_logd=y
+        CONFIG_PACKAGE_luci=y
+        CONFIG_PACKAGE_luci-app-cpufreq=y
+        CONFIG_PACKAGE_mkf2fs=y
+        CONFIG_PACKAGE_mtd=y
+        CONFIG_PACKAGE_netifd=y
+        CONFIG_PACKAGE_nftables=y
+        CONFIG_PACKAGE_partx-utils=y
+        CONFIG_PACKAGE_ppp=y
+        CONFIG_PACKAGE_ppp-mod-pppoe=y
+        CONFIG_PACKAGE_procd-ujail=y
+        CONFIG_PACKAGE_uboot-envtools=y
+        CONFIG_PACKAGE_uci=y
+        CONFIG_PACKAGE_uclient-fetch=y
+        CONFIG_PACKAGE_urandom-seed=y
+        CONFIG_PACKAGE_urngd=y
+        CONFIG_PACKAGE_luci-app-dockerman=y
+        CONFIG_PACKAGE_luci-app-diskman=y
+        CONFIG_PACKAGE_luci-app-passwall=y
+        CONFIG_PACKAGE_luci-app-homeproxy=y
+        CONFIG_PACKAGE_luci-app-homebox=y
+        CONFIG_PACKAGE_luci-app-upnp=y
+        CONFIG_PACKAGE_luci-app-nekobox=y
+        EOF
+
+        # 2. 自动修正后台管理 IP 为 10.0.0.1
+        sed -i 's/192.168.1.1/10.0.0.1/g' package/base-files/files/bin/config_generate
+
+        # 3. 自动修改默认密码为 root
+        sed -i 's/root::0:0:99999:7:::/root:\$1\$V4UetPzk\$CYXluq4wUazHjmCDBCqXF.:0:0:99999:7:::/g' package/base-files/files/etc/shadow
+
+        # 4. 自动补全和检查依赖
+        make defconfig
+
+    - name: Download package
+      id: package
+      run: |
+        cd openwrt
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile the firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        grep 'CONFIG_TARGET.' .config
+
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Organize files
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd openwrt/bin/targets/rockchip/armv8
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: OpenWrt_firmware
+        path: ${{ env.FIRMWARE }}
+
+    - name: Generate release tag
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload firmware to release
+      uses: softprops/action-gh-release@v2
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        files: ${{ env.FIRMWARE }}/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
