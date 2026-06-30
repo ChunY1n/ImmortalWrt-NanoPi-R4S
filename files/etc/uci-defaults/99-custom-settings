@@ -1,0 +1,27 @@
+#!/bin/sh
+# 首次启动时自动生效的网络与系统设置
+# 文件位置：/etc/uci-defaults/99-custom-settings
+
+# ---- LAN 设置 ----
+uci set network.lan.ipaddr='10.0.0.1'
+uci set network.lan.netmask='255.255.255.0'
+
+# ---- 启用 IPv6（LAN 口下发 IPv6） ----
+uci set network.lan.ip6assign='64'
+uci -q delete dhcp.lan.dhcpv6
+uci set dhcp.lan.dhcpv6='server'
+uci set dhcp.lan.ra='server'
+uci set dhcp.lan.ra_management='1'
+
+# ---- uhttpd（web管理）保持默认监听 80/443，可按需调整 ----
+uci set uhttpd.main.listen_http='0.0.0.0:80'
+uci set uhttpd.main.listen_https='0.0.0.0:443'
+
+# ---- root 密码设置为 root ----
+( echo root; sleep 1; echo root ) | passwd root >/dev/null 2>&1
+
+uci commit network
+uci commit dhcp
+uci commit uhttpd
+
+exit 0
