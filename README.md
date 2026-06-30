@@ -1,1 +1,0 @@
-# grmini-r4s1g
