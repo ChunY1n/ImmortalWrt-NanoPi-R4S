@@ -1,3 +1,8 @@
+Here is the fully corrected and complete `.github/workflows/main.yml` file.
+
+I have applied the necessary `root-reserve-mb` adjustment to ensure your system partition has enough breathing room for `apt-get update`, and added `sudo apt-get clean` to prevent the disk from filling up right after dependency installation.
+
+```yaml
 name: Build ImmortalWrt for NanoPi R4S (1G)
 
 on:
@@ -58,15 +63,12 @@ jobs:
       - name: 检出本仓库
         uses: actions/checkout@v4
 
-      # ===== 修复点：用更彻底的方式扩容/清理磁盘空间 =====
-      # 之前用手动 rm -rf 只清了系统盘里几个大目录，实际可用空间不够，
-      # 导致内核编译到最后 objcopy 生成 vmlinux 时报 "No space left on device"。
-      # 这里改用 easimon/maximize-build-space，会把 runner 上额外挂载的
-      # /mnt 大分区也合并进系统盘，一般能多腾出 20~30G。
+      # ===== 修复点：将主系统盘保留空间(root-reserve-mb)从 2048 提升至 6144 =====
+      # 防止扩容挂载后，主系统盘空间太小导致 apt-get update 报 "No space left on device"
       - name: 释放并扩容磁盘空间
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 2048
+          root-reserve-mb: 6144
           swap-size-mb: 1024
           remove-dotnet: 'true'
           remove-android: 'true'
@@ -78,6 +80,7 @@ jobs:
       - name: 清理前剩余空间
         run: df -h
 
+      # ===== 优化点：末尾加上 sudo apt-get clean 清理缓存 =====
       - name: 安装编译依赖
         run: |
           sudo apt-get update
@@ -91,6 +94,7 @@ jobs:
             qemu-utils rsync \
             scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim \
             wget xmlto xxd zlib1g-dev
+          sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
 
       - name: 克隆 ImmortalWrt 源码
@@ -98,7 +102,7 @@ jobs:
           git clone $REPO_URL -b $REPO_BRANCH openwrt
           echo "${{ needs.check-update.outputs.commit_hash }}" > openwrt/SOURCE_COMMIT
 
-      - name: 写入自定义 feeds（passwall 需要额外源，homeproxy/diskman/dockerman/upnp 官方已自带无需额外添加）
+      - name: 写入自定义 feeds
         run: |
           cd openwrt
           # passwall 官方仓库已整体迁移到 Openwrt-Passwall 组织，必须插入到文件顶部，
@@ -191,3 +195,5 @@ jobs:
           delete_tags: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+```
