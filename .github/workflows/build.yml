@@ -87,9 +87,29 @@ jobs:
 
     - name: Generate Configuration
       run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        # 校验种子配置文件是否存在，避免文件名写错（如误传 config.txt）导致
+        # 静默跳过、最终用官方默认配置编译出一份"缺胳膊少腿"的固件
+        if [ -e "$CONFIG_FILE" ]; then
+          mv "$CONFIG_FILE" openwrt/.config
+        else
+          echo "::warning::未在仓库根目录找到 $CONFIG_FILE，将使用 OpenWrt 官方默认配置编译！"
+        fi
+
         cd openwrt
         make defconfig
+
+        echo "== 分区大小确认 =="
+        grep -E "CONFIG_TARGET_(KERNEL|ROOTFS)_PARTSIZE" .config \
+          || echo "::warning::未找到 PARTSIZE 设置，rootfs 分区将使用默认大小，之前 out of space 报错可能复现"
+
+        echo "== 关键自定义软件包确认 =="
+        for pkg in luci-app-passwall luci-app-homeproxy luci-app-dockerman luci-app-diskman; do
+          if grep -q "^CONFIG_PACKAGE_${pkg}=y" .config; then
+            echo "✔ ${pkg} 已选中"
+          else
+            echo "::warning::${pkg} 未在 .config 中选中，自定义配置可能未生效"
+          fi
+        done
 
     - name: Download packages
       working-directory: ./openwrt
