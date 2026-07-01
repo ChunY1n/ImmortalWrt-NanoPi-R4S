@@ -2,12 +2,12 @@ name: Build ImmortalWrt for NanoPi R4S (1G)
 
 on:
   schedule:
-    # 每天北京时间 06:00 检查一次上游是否有更新（UTC 22:00 前一天）
+    # 每天北京時間 06:00 檢查一次上游是否有更新（UTC 22:00 前一天）
     - cron: '0 22 * * *'
   workflow_dispatch:
     inputs:
       force_build:
-        description: '强制编译（忽略是否有更新）'
+        description: '強制編譯（忽略是否有更新）'
         required: false
         default: 'false'
   push:
@@ -32,10 +32,10 @@ jobs:
       need_build: ${{ steps.check.outputs.need_build }}
       commit_hash: ${{ steps.check.outputs.commit_hash }}
     steps:
-      - name: 检出本仓库
+      - name: 檢出本倉庫
         uses: actions/checkout@v4
 
-      - name: 获取上游最新commit并比对
+      - name: 獲取上遊最新commit並比對
         id: check
         run: |
           latest=$(git ls-remote ${{ env.REPO_URL }} ${{ env.REPO_BRANCH }} | awk '{print $1}')
@@ -55,12 +55,10 @@ jobs:
     if: needs.check-update.outputs.need_build == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - name: 检出本仓库
-        uses: actions/checkout@v4
-
-      # ===== 修复点：将主系统盘保留空间(root-reserve-mb)从 2048 提升至 6144 =====
-      # 防止扩容挂载后，主系统盘空间太小导致 apt-get update 报 "No space left on device"
-      - name: 释放并扩容磁盘空间
+      # ===== 關鍵修復點 1：將擴容步驟挪到最前面 =====
+      # 先進行磁碟重新掛載與擴容，避免後續 Checkout 下載的臨時運行文件被掛載覆蓋
+      # 同時將主系統盤保留空間(root-reserve-mb)設為 6144(6GB)，防止 apt-get update 爆滿
+      - name: 釋放並擴容磁碟空間
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 6144
@@ -72,11 +70,15 @@ jobs:
           remove-docker-images: 'true'
           build-mount-path: /home/runner/work
 
-      - name: 清理前剩余空间
+      # ===== 關鍵修復點 2：在擴容完成後再檢出倉庫 =====
+      - name: 檢出本倉庫
+        uses: actions/checkout@v4
+
+      - name: 清理前剩餘空間
         run: df -h
 
-      # ===== 优化点：末尾加上 sudo apt-get clean 清理缓存 =====
-      - name: 安装编译依赖
+      # ===== 優化點：末尾加上 sudo apt-get clean 清理快取 =====
+      - name: 安裝編譯依賴
         run: |
           sudo apt-get update
           sudo apt-get install -y ack antlr3 aria2 asciidoc autoconf automake autopoint \
@@ -92,58 +94,58 @@ jobs:
           sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
 
-      - name: 克隆 ImmortalWrt 源码
+      - name: 克隆 ImmortalWrt 源碼
         run: |
           git clone $REPO_URL -b $REPO_BRANCH openwrt
           echo "${{ needs.check-update.outputs.commit_hash }}" > openwrt/SOURCE_COMMIT
 
-      - name: 写入自定义 feeds
+      - name: 寫入自定義 feeds
         run: |
           cd openwrt
-          # passwall 官方仓库已整体迁移到 Openwrt-Passwall 组织，必须插入到文件顶部，
-          # 以确保编译时优先于官方 packages feed 里的旧版 xray-core/sing-box 等依赖
+          # passwall 官方倉庫已整體遷移到 Openwrt-Passwall 組織，必須插入到文件頂部，
+          # 以確保編譯時優先於官方 packages feed 裡的舊版 xray-core/sing-box 等依賴
           sed -i '1i src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' feeds.conf.default
           sed -i '1i src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' feeds.conf.default
 
-      - name: 应用自定义 diy 脚本
+      - name: 應用自定義 diy 腳本
         run: |
           chmod +x $DIY_SCRIPT
           cd openwrt
           ../$DIY_SCRIPT
 
-      - name: 更新 & 安装 feeds
+      - name: 更新 & 安裝 feeds
         run: |
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 写入预设 .config
+      - name: 寫入預設 .config
         run: |
           cp $CONFIG_FILE openwrt/.config
           [ -d $FILES_DIR ] && cp -r $FILES_DIR openwrt/files
 
-      - name: 生成默认配置（make defconfig）
+      - name: 生成默認配置（make defconfig）
         run: |
           cd openwrt
           make defconfig
 
-      - name: 下载依赖软件包
+      - name: 下載依賴軟件包
         run: |
           cd openwrt
           make download -j$(nproc) || make download -j1
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -delete
 
-      - name: 编译前磁盘空间
+      - name: 編譯前磁碟空間
         run: df -h
 
-      - name: 开始编译固件
+      - name: 開始編譯固件
         run: |
           cd openwrt
           echo -e "$(nproc) thread compile"
           make -j$(nproc) || make -j1 V=s
 
-      - name: 检查磁盘空间
+      - name: 檢查磁碟空間
         if: always()
         run: df -h
 
@@ -155,35 +157,35 @@ jobs:
           cp openwrt/.config firmware/config.txt
           cp openwrt/bin/targets/rockchip/armv8/sha256sums firmware/ 2>/dev/null || true
 
-      - name: 生成发布信息
+      - name: 生成發布信息
         id: info
         run: |
           echo "date=$(date +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
 
-      - name: 更新已编译commit记录
+      - name: 更新已編譯commit記錄
         run: |
           echo "${{ needs.check-update.outputs.commit_hash }}" > last_build_commit.txt
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add last_build_commit.txt
-          git commit -m "chore: update last_build_commit ${{ steps.info.outputs.date }}" || echo "无变更"
-          git push || echo "推送失败，可能需要检查权限"
+          git commit -m "chore: update last_build_commit ${{ steps.info.outputs.date }}" || echo "無變更"
+          git push || echo "推送失敗，可能需要檢查權限"
 
-      - name: 发布 Release
+      - name: 發布 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ steps.info.outputs.date }}
           name: NanoPi R4S 固件 ${{ steps.info.outputs.date }}
           body: |
-            自动编译于 ${{ steps.info.outputs.date }}
-            上游 commit: ${{ needs.check-update.outputs.commit_hash }}
-            管理地址: 10.0.0.1  密码: root
+            自動編譯於 ${{ steps.info.outputs.date }}
+            上遊 commit: ${{ needs.check-update.outputs.commit_hash }}
+            管理地址: 10.0.0.1  密碼: root
           files: |
             firmware/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 删除7天前的旧Release（保留空间）
+      - name: 刪除7天前的舊Release（保留空間）
         uses: dev-drprasad/delete-older-releases@v0.3.4
         with:
           keep_latest: 5
