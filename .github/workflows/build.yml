@@ -1,40 +1,64 @@
 name: Build ImmortalWrt for R4S 1G
-
 on:
   repository_dispatch:
   workflow_dispatch:
   schedule:
     - cron: '0 20 * * 4' # 每周四 UTC 20:00 (北京时间每周五凌晨 4:00) 自动触发编译
-
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: master # 或者选择特定的稳定分支，如 openwrt-23.05
+  # 锁定稳定分支而非 master 开发分支，编译更稳定，减少不必要的包体积
+  REPO_BRANCH: openwrt-25.12
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+
+    - name: Free up disk space
+      run: |
+        echo "清理前磁盘占用："
+        df -hT $PWD
+        # /opt/hostedtoolcache 通常是占用最大的一块（10GB+），之前漏清理是
+        # 导致 "No space left on device" 编译失败的主要原因
+        sudo rm -rf /opt/hostedtoolcache
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo rm -rf /usr/local/share/powershell /usr/share/swift /frameworks
+        sudo rm -rf /usr/local/share/boost /usr/local/graalvm* /usr/local/.ghcup
+        sudo rm -rf /usr/lib/jvm /usr/local/julia*
+        sudo docker image prune --all --force 2>/dev/null || true
+        sudo apt-get clean
+        echo "清理后磁盘占用："
+        df -hT $PWD
+
+    - name: Increase swap space
+      run: |
+        # 编译内核/gnutls 等包在并发编译时内存压力较大，加 swap 防止 OOM
+        AVAIL_GB=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+        SWAP_GB=$(( AVAIL_GB / 4 > 8 ? 8 : AVAIL_GB / 4 ))
+        [ "$SWAP_GB" -lt 1 ] && SWAP_GB=1
+        echo "分配 ${SWAP_GB}G swap"
+        sudo swapoff -a
+        sudo fallocate -l ${SWAP_GB}G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        free -h
 
     - name: Initialization environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        # 清理多余的大型工具和组件
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /frameworks
-        
-        # 更新源并安装依赖（已在末尾添加 python3-pyelftools）
         sudo -E apt-get -qq update
         sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils qemu-utils rsync scons squashfs-tools subversion swig texinfo u-boot-tools upx-ucl unzip xz-utils zlib1g-dev lib32gcc-s1 python3-pyelftools
-        
-        # 补充：通过 pip 安装 pyelftools 以确保 u-boot 检查绝对通过
-        pip3 install --user pyelftools
-        
+
+        # 用 sudo -E 保持和 make 一致的执行环境安装，避免 --user 安装的包
+        # 在 sudo make 时因 PATH 不同而读不到
+        sudo -E pip3 install --upgrade pyelftools
+
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "Asia/Shanghai"
@@ -42,8 +66,15 @@ jobs:
     - name: Clone source code
       run: |
         df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        cd openwrt
+        git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+
+    - name: Cache downloaded packages (dl)
+      uses: actions/cache@v4
+      with:
+        path: openwrt/dl
+        key: dl-packages-${{ env.REPO_BRANCH }}-${{ hashFiles('openwrt/.git/HEAD') }}
+        restore-keys: |
+          dl-packages-${{ env.REPO_BRANCH }}-
 
     - name: Load custom feeds & scripts
       run: |
@@ -59,9 +90,38 @@ jobs:
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
         cd openwrt
         make defconfig
-        
+
+    - name: Download packages
+      working-directory: ./openwrt
+      run: |
+        # 体积检查只扫描 dl/ 顶层（-maxdepth 1），避免误伤 go-mod-cache 等
+        # 子目录里天然存在的大量正常小文件
+        for i in 1 2 3; do
+          make download -j8 && break
+          echo "第 $i 次下载未完全成功，清理可疑文件后重试..."
+          find dl -maxdepth 1 -type f -size -1024c -exec rm -f {} \;
+          sleep 10
+        done
+        make download -j1
+
+        BAD_FILES=$(find dl -maxdepth 1 -type f -size -1024c)
+        if [ -n "$BAD_FILES" ]; then
+          echo "::warning::以下文件体积异常（<1KB），可能下载不完整，正在清理重试："
+          echo "$BAD_FILES"
+          echo "$BAD_FILES" | xargs -r rm -f
+          make download -j1
+          STILL_BAD=$(find dl -maxdepth 1 -type f -size -1024c)
+          if [ -n "$STILL_BAD" ]; then
+            echo "::error::以下文件多次尝试后仍然异常，请检查网络或上游源是否失效："
+            echo "$STILL_BAD"
+            exit 1
+          fi
+        fi
+        echo "所有包下载完整"
+
     - name: Compile the firmware
       run: |
+        df -hT $PWD
         cd openwrt
         echo -e "$(nproc) thread compile"
         make -j$(nproc) || make -j1 || make -j1 V=s
