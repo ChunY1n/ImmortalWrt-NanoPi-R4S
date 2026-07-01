@@ -1,29 +1,17 @@
-# NanoPi R4S (1G) ImmortalWrt 自动编译固件
+# ImmortalWrt for NanoPi R4S (1G)
 
-## 目录结构
-```
-.github/workflows/build-r4s.yml   # 自动编译工作流（每天检测上游更新，有更新才编译并发布Release）
-diy-part.sh                       # 编译前的源码定制脚本（LAN IP、主机名等）
-.config                           # 预设软件包与目标设备种子配置
-files/etc/uci-defaults/99-custom-settings  # 固件首次启动时自动写入的运行时设置
-```
+基于 GitHub Actions 实现的 ImmortalWrt 固件自动编译与更新流水线。
 
-## 已确认/已配置的关键参数
-| 项目 | 配置 |
-|---|---|
-| 设备 | NanoPi R4S（DEVICE_friendlyarm_nanopi-r4s，1G/4G内存通用同一固件） |
-| 镜像格式 | 标准 img.gz（非EFI，按你的确认已去掉EFI要求） |
-| 管理地址 | 10.0.0.1 |
-| 子网掩码 | 255.255.255.0 |
-| 后台密码 | root |
-| IPv6 | 已启用（LAN下发SLAAC+DHCPv6） |
-| Web服务器 | uhttpd |
-| 软件分区(overlay)大小 | 约1024MB |
+## ⚙️ 固件默认配置
 
-## 已确认的最终预装 LuCI 应用
-luci-app-dockerman、luci-app-diskman、luci-app-passwall、luci-app-homeproxy、luci-app-upnp、luci-app-cpufreq
+* **管理地址**：`10.0.0.1`
+* **子网掩码**：`255.255.255.0`
+* **初始密码**：`root`
+* **系统分区**：核心软件空间已扩容至 **1GB**
+* **核心预装**：Docker, Diskman, Passwall, HomeProxy, UPnP, IPv6 支持, uHTTPd Web 服务器
 
-## 登录信息
-- 地址：`http://10.0.0.1`
-- 用户名：`root`
-- 密码：`root`（首次登录后强烈建议手动修改）
+## 🚀 自动化与构建
+
+* **自动更新**：每周五凌晨 04:00 (北京时间) 自动触发编译。
+* **手动触发**：进入 GitHub 仓库的 **Actions** 页面 -> 选择 **Build ImmortalWrt** -> 点击 **Run workflow**。
+* **下载固件**：编译完成后，在当次 Action 运行页面的 **Artifacts** 处下载 `*.img.gz`。
