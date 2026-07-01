@@ -1,204 +1,67 @@
-name: Build ImmortalWrt for NanoPi R4S (1G)
+name: Build ImmortalWrt for R4S 1G
 
 on:
-  schedule:
-    # 每天北京时间 06:00 检查一次上游是否有更新（UTC 22:00 前一天）
-    - cron: '0 22 * * *'
+  repository_dispatch:
   workflow_dispatch:
-    inputs:
-      force_build:
-        description: '强制编译（忽略是否有更新）'
-        required: false
-        default: 'false'
-  push:
-    paths:
-      - '.config'
-      - 'diy-part.sh'
-      - 'files/**'
-      - '.github/workflows/build-r4s.yml'
+  schedule:
+    - cron: '0 20 * * 4' # 每周四 UTC 20:00 (北京时间每周五凌晨 4:00) 自动触发编译
 
 env:
-  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
-  REPO_BRANCH: master
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: master # 或者选择特定的稳定分支，如 openwrt-23.05
   CONFIG_FILE: .config
-  DIY_SCRIPT: diy-part.sh
-  FILES_DIR: files
-  TZ: Asia/Shanghai
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
 
 jobs:
-  check-update:
-    runs-on: ubuntu-22.04
-    outputs:
-      need_build: ${{ steps.check.outputs.need_build }}
-      commit_hash: ${{ steps.check.outputs.commit_hash }}
-    steps:
-      - name: 检出本仓库
-        uses: actions/checkout@v4
-
-      - name: 获取上游最新commit并比对
-        id: check
-        run: |
-          latest=$(git ls-remote ${{ env.REPO_URL }} ${{ env.REPO_BRANCH }} | awk '{print $1}')
-          echo "commit_hash=$latest" >> $GITHUB_OUTPUT
-          cached=""
-          if [ -f last_build_commit.txt ]; then
-            cached=$(cat last_build_commit.txt)
-          fi
-          if [ "${{ github.event.inputs.force_build }}" = "true" ] || [ "$latest" != "$cached" ] || [ "${{ github.event_name }}" = "push" ]; then
-            echo "need_build=true" >> $GITHUB_OUTPUT
-          else
-            echo "need_build=false" >> $GITHUB_OUTPUT
-          fi
-
   build:
-    needs: check-update
-    if: needs.check-update.outputs.need_build == 'true'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+
     steps:
-      # ===== 修复点 1：将 Checkout 放回第一步，但修改后面的扩容挂载路径 =====
-      - name: 检出本仓库
-        uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      # ===== 修复点 2：将 build-mount-path 改为 /workdir =====
-      # 这样扩容插件会把超大分区挂载到 /workdir，绝对不会影响到 GitHub 自身的运行环境
-      - name: 释放并扩容磁盘空间
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 6144
-          swap-size-mb: 1024
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-          build-mount-path: /workdir
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /frameworks
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils qemu-utils rsync scons squashfs-tools subversion swig texinfo u-boot-tools upx-ucl unzip xartow-utils xmlto xz-utils zlib1g-dev lib32gcc-s1 libc6-dev-i386-amd64-cross
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "Asia/Shanghai"
 
-      - name: 清理前剩余空间
-        run: df -h
+    - name: Clone source code
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        cd openwrt
 
-      - name: 安装编译依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ack antlr3 aria2 asciidoc autoconf automake autopoint \
-            binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler \
-            fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man \
-            intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
-            libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev \
-            libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch \
-            pkgconf python3 python3-pip python3-ply python3-docutils python3-pyelftools \
-            qemu-utils rsync \
-            scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim \
-            wget xmlto xxd zlib1g-dev
-          sudo apt-get clean
-          sudo timedatectl set-timezone "$TZ"
+    - name: Load custom feeds & scripts
+      run: |
+        [ -e $DIY_P1_SH ] && chmod +x $DIY_P1_SH && ./$DIY_P1_SH
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        cd ..
+        [ -e $DIY_P2_SH ] && chmod +x $DIY_P2_SH && ./$DIY_P2_SH
 
-      # ===== 修复点 3：把当前仓库里的配置文件和脚本拷贝到超大分区 /workdir 中执行 =====
-      - name: 初始化并转移工作目录
-        run: |
-          sudo chown -R runner:runner /workdir
-          cp -r .config diy-part.sh files /workdir/ 2>/dev/null || true
-          # 将后面的全局步骤环境切换到大分区
-          echo "WORK_DIR=/workdir" >> $GITHUB_ENV
+    - name: Generate Configuration
+      run: |
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        cd openwrt
+        make defconfig
+        
+    - name: Compile the firmware
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: 克隆 ImmortalWrt 源码
-        run: |
-          cd $WORK_DIR
-          git clone $REPO_URL -b $REPO_BRANCH openwrt
-          echo "${{ needs.check-update.outputs.commit_hash }}" > openwrt/SOURCE_COMMIT
-
-      - name: 写入自定义 feeds
-        run: |
-          cd $WORK_DIR/openwrt
-          sed -i '1i src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' feeds.conf.default
-          sed -i '1i src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' feeds.conf.default
-
-      - name: 应用自定义 diy 脚本
-        run: |
-          cd $WORK_DIR
-          chmod +x $DIY_SCRIPT
-          cd openwrt
-          ../$DIY_SCRIPT
-
-      - name: 更新 & 安装 feeds
-        run: |
-          cd $WORK_DIR/openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: 写入预设 .config
-        run: |
-          cd $WORK_DIR
-          cp $CONFIG_FILE openwrt/.config
-          [ -d $FILES_DIR ] && cp -r $FILES_DIR openwrt/files
-
-      - name: 生成默认配置（make defconfig）
-        run: |
-          cd $WORK_DIR/openwrt
-          make defconfig
-
-      - name: 下载依赖软件包
-        run: |
-          cd $WORK_DIR/openwrt
-          make download -j$(nproc) || make download -j1
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -delete
-
-      - name: 编译前磁盘空间
-        run: df -h
-
-      - name: 开始编译固件
-        run: |
-          cd $WORK_DIR/openwrt
-          echo -e "$(nproc) thread compile"
-          make -j$(nproc) || make -j1 V=s
-
-      - name: 检查磁盘空间
-        if: always()
-        run: df -h
-
-      - name: 整理固件文件
-        run: |
-          cd $WORK_DIR
-          mkdir -p firmware
-          cp openwrt/bin/targets/rockchip/armv8/*.img.gz firmware/ 2>/dev/null || true
-          cp openwrt/bin/targets/rockchip/armv8/*sysupgrade*.img.gz firmware/ 2>/dev/null || true
-          cp openwrt/.config firmware/config.txt
-          cp openwrt/bin/targets/rockchip/armv8/sha256sums firmware/ 2>/dev/null || true
-
-      - name: 生成发布信息
-        id: info
-        run: |
-          echo "date=$(date +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
-
-      # ===== 修复点 4：更新记录时需要回到原来的 github 工作目录修改并提交 =====
-      # 因为 last_build_commit.txt 在你的配置库里
-      - name: 更新已编译commit记录
-        run: |
-          echo "${{ needs.check-update.outputs.commit_hash }}" > last_build_commit.txt
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_build_commit.txt
-          git commit -m "chore: update last_build_commit ${{ steps.info.outputs.date }}" || echo "无变更"
-          git push || echo "推送失败，可能需要检查权限"
-
-      - name: 发布 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ steps.info.outputs.date }}
-          name: NanoPi R4S 固件 ${{ steps.info.outputs.date }}
-          body: |
-            自动编译于 ${{ steps.info.outputs.date }}
-            上游 commit: ${{ needs.check-update.outputs.commit_hash }}
-            管理地址: 10.0.0.1  密码: root
-          files: |
-            ${{ env.WORK_DIR }}/firmware/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 删除7天前的旧Release（保留空间）
-        uses: dev-drprasad/delete-older-releases@v0.3.4
-        with:
-          keep_latest: 5
-          delete_tags: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload firmware to Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ImmortalWrt_R4S_1G
+        path: openwrt/bin/targets/rockchip/armv8/*.img.gz
