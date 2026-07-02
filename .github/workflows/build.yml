@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '0 20 * * 4' # 每周四 UTC 20:00 (北京时间每周五凌晨 4:00) 自动触发编译
+
+permissions:
+  contents: write   # 自动创建 Release 需要写权限
+
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   # 锁定稳定分支而非 master 开发分支，编译更稳定，减少不必要的包体积
@@ -11,6 +15,8 @@ env:
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
+  FIRMWARE_PATH: openwrt/bin/targets/rockchip/armv8
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -111,6 +117,13 @@ jobs:
           fi
         done
 
+        echo "== 后台管理 IP 确认 =="
+        if grep -q "10.0.0.1" package/base-files/files/bin/config_generate; then
+          echo "✔ 默认管理 IP 已改为 10.0.0.1"
+        else
+          echo "::warning::未检测到 10.0.0.1，diy-part2.sh 可能未正确修改 config_generate"
+        fi
+
     - name: Download packages
       working-directory: ./openwrt
       run: |
@@ -147,8 +160,52 @@ jobs:
         make -j$(nproc) || make -j1 || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
+    - name: Organize firmware files
+      id: organize
+      run: |
+        cd $FIRMWARE_PATH
+        mkdir -p /tmp/firmware
+        # 只挑固件相关文件，避免把 buildinfo/manifest 等杂项也塞进 Release
+        cp -f *.img.gz /tmp/firmware/ 2>/dev/null || true
+        cp -f *.manifest /tmp/firmware/ 2>/dev/null || true
+        ls -lh /tmp/firmware
+
+    - name: Generate release info
+      id: release_info
+      run: |
+        echo "tag=$(date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
+        echo "date=$(date '+%Y-%m-%d %H:%M %Z')" >> $GITHUB_OUTPUT
+
     - name: Upload firmware to Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ImmortalWrt_R4S_1G
-        path: openwrt/bin/targets/rockchip/armv8/*.img.gz
+        path: /tmp/firmware/*
+        retention-days: 7
+
+    - name: Delete older releases
+      uses: dev-drprasad/delete-older-releases@v0.3.4
+      with:
+        keep_latest: 5
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload firmware to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.release_info.outputs.tag }}
+        name: "ImmortalWrt R4S 固件 ${{ steps.release_info.outputs.date }}"
+        body: |
+          ## 自动编译发布
+
+          - 源码分支：`${{ env.REPO_BRANCH }}`
+          - 编译时间：${{ steps.release_info.outputs.date }}
+          - 默认管理地址：`10.0.0.1`
+          - 默认账号密码：`root` / `password`（首次登录请及时修改）
+
+          > 本次固件由 GitHub Actions 自动编译并发布，构建日志详见 Actions 页面。
+        files: /tmp/firmware/*
+        make_latest: true
+        draft: false
+        prerelease: false
