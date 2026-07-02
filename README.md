@@ -6,6 +6,5 @@
 
 * **管理地址**：`10.0.0.1`
 * **子网掩码**：`255.255.255.0`
-* **初始密码**：`root`
 * **系统分区**：核心软件空间已扩容至 **1GB**
 * **核心预装**：Docker, Diskman, Passwall, HomeProxy, UPnP, IPv6 支持, uHTTPd Web 服务器
