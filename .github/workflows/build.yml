@@ -202,7 +202,6 @@ jobs:
           - 源码分支：`${{ env.REPO_BRANCH }}`
           - 编译时间：${{ steps.release_info.outputs.date }}
           - 默认管理地址：`10.0.0.1`
-          - 默认账号密码：`root` / `password`（首次登录请及时修改）
 
           > 本次固件由 GitHub Actions 自动编译并发布，构建日志详见 Actions 页面。
         files: /tmp/firmware/*
